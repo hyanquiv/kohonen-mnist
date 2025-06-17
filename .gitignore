@@ -1,0 +1,56 @@
+# Archivos generados por CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+build/
+out/
+build-*/
+
+# Archivos de Visual Studio
+*.VC.db
+*.VC.opendb
+*.sdf
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.ncb
+*.opensdf
+
+# Directorios de VS temporales
+.vs/
+Debug/
+Release/
+x64/
+ipch/
+*.log
+
+# Archivos de salida comunes
+*.exe
+*.obj
+*.o
+*.lib
+*.dll
+*.pdb
+*.idb
+
+# Archivos de sistema
+Thumbs.db
+ehthumbs.db
+*.DS_Store
+*.stackdump
+
+# Archivos de respaldo
+*~
+*.swp
+*.bak
+*.tmp
+
+# Archivos de pruebas unitarias generados
+Testing/
+CTestTestfile.cmake
+DartConfiguration.tcl
+
+# Archivos de paquetes/vcpkg (si usas vcpkg como gestor de dependencias)
+vcpkg_installed/
