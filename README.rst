@@ -1,7 +1,7 @@
-MiProyecto
-==========
+Kohonen + OpenGL + Mnist
+========================
 
-Aplicación en C++ que utiliza OpenCV, GLFW, GLEW y GLM para procesamiento gráfico y visualización.
+Aplicación en C++ que utiliza OpenGL, GLFW, GLEW y GLM para procesamiento gráfico y visualización.
 
 Compilado con CMake y gestionado con vcpkg.
 
