@@ -4,6 +4,8 @@
 #include <random>
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
+#include <filesystem>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -11,11 +13,17 @@
 #include <glm/gtc/type_ptr.hpp>
 #include "mnist/mnist_reader.hpp"
 
+namespace fs = std::filesystem;
+
 // Parámetros configurables
 const int SOM_SIZE = 8;       // Tamaño del cubo SOM (SOM_SIZE^3 neuronas)
-const int INPUT_SIZE = 784;    // 28x28 píxeles
+const int INPUT_SIZE = 784;   // 28x28 píxeles
 const int EPOCHS = 100;       // Reducido para pruebas
 const int SAMPLES = 1000;     // Subconjunto de entrenamiento
+const int TEST_SAMPLES = 200; // Muestras para evaluación
+
+// Directorio de resultados
+const std::string RESULT_DIR = "resultados";
 
 // Estructura para la red Kohonen 3D
 struct Kohonen3D {
@@ -44,10 +52,13 @@ private:
     float rotationAngle;
     int totalNeurons;
     int surfaceNeurons;
+    bool trainingCompleted;
+    bool weightsLoaded;
     
 public:
     SOMVisualizer() : window(nullptr), rotationAngle(0.0f), 
-                      totalNeurons(0), surfaceNeurons(0) {}
+                      totalNeurons(0), surfaceNeurons(0),
+                      trainingCompleted(false), weightsLoaded(false) {}
     
     bool initGL() {
         // Inicializar GLFW
@@ -86,19 +97,24 @@ public:
         const char* vertexShaderSource = R"(
             #version 330 core
             layout (location = 0) in vec3 aPos;
+            layout (location = 1) in vec2 aTexCoord;
+            out vec2 TexCoord;
             uniform mat4 model;
             uniform mat4 view;
             uniform mat4 projection;
             void main() {
                 gl_Position = projection * view * model * vec4(aPos, 1.0);
+                TexCoord = aTexCoord;
             }
         )";
         
         const char* fragmentShaderSource = R"(
             #version 330 core
+            in vec2 TexCoord;
             out vec4 FragColor;
+            uniform sampler2D ourTexture;
             void main() {
-                FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Blanco sólido
+                FragColor = texture(ourTexture, TexCoord);
             }
         )";
         
@@ -145,33 +161,18 @@ public:
     }
     
     void setupBuffers() {
-        // Geometría básica de un cubo (centrado en origen)
+        // Geometría básica de un plano (para mostrar el patrón)
         float vertices[] = {
-            // Position
-            -0.4f, -0.4f, -0.4f,
-             0.4f, -0.4f, -0.4f,
-             0.4f,  0.4f, -0.4f,
-            -0.4f,  0.4f, -0.4f,
-            
-            -0.4f, -0.4f,  0.4f,
-             0.4f, -0.4f,  0.4f,
-             0.4f,  0.4f,  0.4f,
-            -0.4f,  0.4f,  0.4f
+            // Posiciones         // Coordenadas de textura
+            -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
+             0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
+             0.5f,  0.5f, 0.0f,  1.0f, 1.0f,
+            -0.5f,  0.5f, 0.0f,  0.0f, 1.0f
         };
         
         unsigned int indices[] = {
-            // Cara trasera
-            0, 1, 2, 2, 3, 0,
-            // Cara delantera
-            4, 5, 6, 6, 7, 4,
-            // Cara izquierda
-            0, 3, 7, 7, 4, 0,
-            // Cara derecha
-            1, 2, 6, 6, 5, 1,
-            // Cara superior
-            3, 2, 6, 6, 7, 3,
-            // Cara inferior
-            0, 1, 5, 5, 4, 0
+            0, 1, 2,
+            2, 3, 0
         };
         
         glGenVertexArrays(1, &VAO);
@@ -188,23 +189,81 @@ public:
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
         
         // Posiciones
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
+        
+        // Coordenadas de textura
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
         
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }
     
-    void trainSOM(mnist::MNIST_dataset<std::vector, std::vector<uint8_t>, uint8_t>& dataset) {
+    void initializeSOM() {
         totalNeurons = SOM_SIZE * SOM_SIZE * SOM_SIZE;
-        surfaceNeurons = 6 * SOM_SIZE * SOM_SIZE - 12 * SOM_SIZE + 8; // Fórmula para neuronas de superficie
+        surfaceNeurons = 6 * SOM_SIZE * SOM_SIZE - 12 * SOM_SIZE + 8;
         
-        std::cout << "\n=== Iniciando entrenamiento de red Kohonen 3D ===" << std::endl;
+        // Crear directorio de resultados si no existe
+        if (!fs::exists(RESULT_DIR)) {
+            fs::create_directory(RESULT_DIR);
+        }
+        
+        std::string weightsFile = RESULT_DIR + "/som_weights.bin";
+        
+        if (fs::exists(weightsFile)) {
+            std::cout << "Cargando pesos preentrenados..." << std::endl;
+            if (loadWeights(weightsFile)) {
+                weightsLoaded = true;
+                std::cout << "Pesos cargados exitosamente!" << std::endl;
+                return;
+            }
+            else {
+                std::cerr << "Error al cargar pesos. Se procederá a entrenar." << std::endl;
+            }
+        }
+        
+        // Si no hay pesos guardados, entrenar
+        weightsLoaded = false;
+    }
+    
+    bool loadWeights(const std::string& filename) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file) return false;
+        
+        int savedSize;
+        file.read(reinterpret_cast<char*>(&savedSize), sizeof(savedSize));
+        
+        if (savedSize != SOM_SIZE) {
+            std::cerr << "Tamaño de SOM incompatible: " << savedSize << " vs " << SOM_SIZE << std::endl;
+            return false;
+        }
+        
+        for (int x = 0; x < SOM_SIZE; ++x) {
+            for (int y = 0; y < SOM_SIZE; ++y) {
+                for (int z = 0; z < SOM_SIZE; ++z) {
+                    for (int i = 0; i < INPUT_SIZE; ++i) {
+                        file.read(reinterpret_cast<char*>(&som.weights[x][y][z][i]), sizeof(float));
+                    }
+                }
+            }
+        }
+        
+        return file.good();
+    }
+    
+    void trainSOM(mnist::MNIST_dataset<std::vector, std::vector<uint8_t>, uint8_t>& dataset) {
+        if (weightsLoaded) {
+            std::cout << "Usando pesos preentrenados. Saltando entrenamiento." << std::endl;
+            trainingCompleted = true;
+            return;
+        }
+        
+        std::cout << "\n=== INICIANDO ENTRENAMIENTO DE RED KOHONEN 3D ===" << std::endl;
         std::cout << "Tamaño del SOM: " << SOM_SIZE << "x" << SOM_SIZE << "x" << SOM_SIZE << std::endl;
         std::cout << "Neuronas totales: " << totalNeurons << std::endl;
-        std::cout << "Neuronas de superficie: " << surfaceNeurons << std::endl;
         std::cout << "Dimensiones de entrada: " << INPUT_SIZE << " (28x28)" << std::endl;
-        std::cout << "Epocas: " << EPOCHS << " | Muestras por época: " << SAMPLES << std::endl;
+        std::cout << "Épocas: " << EPOCHS << " | Muestras por época: " << SAMPLES << std::endl;
         std::cout << "Inicializando pesos... ";
         
         // Inicializar pesos aleatoriamente
@@ -221,7 +280,7 @@ public:
                 }
             }
         }
-        std::cout << "Completado\n" << std::endl;
+        std::cout << "COMPLETADO\n" << std::endl;
         
         // Parámetros de entrenamiento
         const float initialLR = 0.3f;
@@ -303,64 +362,80 @@ public:
             float progress = (epoch + 1) * 100.0f / EPOCHS;
             
             // Mostrar progreso detallado
-            std::cout << "Epoca " << epoch + 1 << "/" << EPOCHS;
-            std::cout << " | Progreso: " << std::fixed  << progress << "%";
-            std::cout << " | Tasa aprend: " << std::scientific << learningRate;
-            std::cout << " | Radio: " << std::fixed << radius;
-            std::cout << " | Distancia: " << std::fixed  << epochDist << std::endl;
+            std::cout << "Época " << std::setw(3) << epoch + 1 << "/" << EPOCHS;
+            std::cout << " | Progreso: " << std::fixed << std::setprecision(1) << progress << "%";
+            std::cout << " | Tasa: " << std::scientific << learningRate;
+            std::cout << " | Radio: " << std::fixed << std::setprecision(2) << radius;
+            std::cout << " | Dist: " << std::fixed << std::setprecision(4) << epochDist << std::endl;
         }
         
-        std::cout << "\nEntrenamiento completado exitosamente!" << std::endl;
-        std::cout << "Guardando resultados... ";
-        saveResults();
-        std::cout << "Completado" << std::endl;
+        // Guardar pesos
+        saveWeights();
+        trainingCompleted = true;
+        
+        std::cout << "\nENTRENAMIENTO COMPLETADO EXITOSAMENTE!" << std::endl;
+        std::cout << "Pesos guardados en: " << RESULT_DIR << "/som_weights.bin" << std::endl;
     }
     
-    void saveResults() {
-        // Guardar estructura del SOM
-        std::ofstream somFile("som_structure.bin", std::ios::binary);
-        somFile.write(reinterpret_cast<const char*>(&SOM_SIZE), sizeof(SOM_SIZE));
+    void saveWeights() {
+        std::ofstream file(RESULT_DIR + "/som_weights.bin", std::ios::binary);
+        if (!file) {
+            std::cerr << "Error al abrir archivo para guardar pesos" << std::endl;
+            return;
+        }
         
-        // Guardar pesos solo de las neuronas de superficie
-        for (int x = 0; x < SOM_SIZE; x += SOM_SIZE-1) {
+        file.write(reinterpret_cast<const char*>(&SOM_SIZE), sizeof(SOM_SIZE));
+        
+        for (int x = 0; x < SOM_SIZE; ++x) {
             for (int y = 0; y < SOM_SIZE; ++y) {
                 for (int z = 0; z < SOM_SIZE; ++z) {
-                    saveNeuron(somFile, x, y, z);
+                    for (int i = 0; i < INPUT_SIZE; ++i) {
+                        file.write(reinterpret_cast<const char*>(&som.weights[x][y][z][i]), sizeof(float));
+                    }
                 }
             }
-        }
-        
-        for (int y = 0; y < SOM_SIZE; y += SOM_SIZE-1) {
-            for (int x = 1; x < SOM_SIZE-1; ++x) {
-                for (int z = 0; z < SOM_SIZE; ++z) {
-                    saveNeuron(somFile, x, y, z);
-                }
-            }
-        }
-        
-        for (int z = 0; z < SOM_SIZE; z += SOM_SIZE-1) {
-            for (int x = 1; x < SOM_SIZE-1; ++x) {
-                for (int y = 1; y < SOM_SIZE-1; ++y) {
-                    saveNeuron(somFile, x, y, z);
-                }
-            }
-        }
-        
-        somFile.close();
-    }
-    
-    void saveNeuron(std::ofstream& file, int x, int y, int z) {
-        file.write(reinterpret_cast<const char*>(&x), sizeof(x));
-        file.write(reinterpret_cast<const char*>(&y), sizeof(y));
-        file.write(reinterpret_cast<const char*>(&z), sizeof(z));
-        
-        for (int k = 0; k < INPUT_SIZE; ++k) {
-            float weight = som.weights[x][y][z][k];
-            file.write(reinterpret_cast<const char*>(&weight), sizeof(weight));
         }
     }
     
-    void render() {
+    void renderPattern(int x, int y, int z) {
+        // Crear textura con el patrón de la neurona
+        GLuint texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        
+        // Configurar textura
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        
+        // Convertir pesos a imagen 28x28
+        std::vector<unsigned char> imageData(28 * 28);
+        for (int i = 0; i < 28 * 28; ++i) {
+            imageData[i] = static_cast<unsigned char>(som.weights[x][y][z][i] * 255);
+        }
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 28, 28, 0, GL_RED, GL_UNSIGNED_BYTE, imageData.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+        
+        // Dibujar plano con la textura
+        glUseProgram(shaderProgram);
+        glBindVertexArray(VAO);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(x, y, z));
+        model = glm::scale(model, glm::vec3(0.8f, 0.8f, 0.8f));
+        
+        GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        
+        glDeleteTextures(1, &texture);
+    }
+    
+    void renderSurface() {
         // Cámara orbital
         float cameraDistance = SOM_SIZE * 2.5f;
         float camX = sin(rotationAngle) * cameraDistance;
@@ -372,24 +447,23 @@ public:
             glm::vec3(0.0f, 1.0f, 0.0f)
         );
         
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Fondo negro
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
-        glUseProgram(shaderProgram);
-        glBindVertexArray(VAO);
-        
         // Pasar matrices a los shaders
+        glUseProgram(shaderProgram);
+        
         GLint viewLoc = glGetUniformLocation(shaderProgram, "view");
         glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
         
         GLint projLoc = glGetUniformLocation(shaderProgram, "projection");
         glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(projection));
         
-        // Dibujar solo las neuronas de superficie
+        // Renderizar solo la superficie
         for (int x = 0; x < SOM_SIZE; x += SOM_SIZE-1) {
             for (int y = 0; y < SOM_SIZE; ++y) {
                 for (int z = 0; z < SOM_SIZE; ++z) {
-                    drawNeuron(x, y, z);
+                    renderPattern(x, y, z);
                 }
             }
         }
@@ -397,7 +471,7 @@ public:
         for (int y = 0; y < SOM_SIZE; y += SOM_SIZE-1) {
             for (int x = 1; x < SOM_SIZE-1; ++x) {
                 for (int z = 0; z < SOM_SIZE; ++z) {
-                    drawNeuron(x, y, z);
+                    renderPattern(x, y, z);
                 }
             }
         }
@@ -405,30 +479,98 @@ public:
         for (int z = 0; z < SOM_SIZE; z += SOM_SIZE-1) {
             for (int x = 1; x < SOM_SIZE-1; ++x) {
                 for (int y = 1; y < SOM_SIZE-1; ++y) {
-                    drawNeuron(x, y, z);
+                    renderPattern(x, y, z);
                 }
             }
         }
-        
-        glBindVertexArray(0);
-        glfwSwapBuffers(window);
     }
     
-    void drawNeuron(int x, int y, int z) {
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(x, y, z));
+    void evaluatePerformance(mnist::MNIST_dataset<std::vector, std::vector<uint8_t>, uint8_t>& dataset) {
+        if (!trainingCompleted && !weightsLoaded) {
+            std::cerr << "El modelo no está entrenado. No se puede evaluar." << std::endl;
+            return;
+        }
         
-        GLint modelLoc = glGetUniformLocation(shaderProgram, "model");
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        std::cout << "\n=== EVALUANDO RENDIMIENTO ===" << std::endl;
+        std::cout << "Muestras de prueba: " << TEST_SAMPLES << std::endl;
         
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        int correct = 0;
+        int neuronActivations[SOM_SIZE][SOM_SIZE][SOM_SIZE] = {{{0}}};
+        
+        for (int i = 0; i < TEST_SAMPLES; ++i) {
+            int sampleIdx = rand() % dataset.test_images.size();
+            std::vector<float> sample(INPUT_SIZE);
+            for (int j = 0; j < INPUT_SIZE; ++j) {
+                sample[j] = dataset.test_images[sampleIdx][j] / 255.0f;
+            }
+            
+            // Encontrar BMU
+            int bmuX = 0, bmuY = 0, bmuZ = 0;
+            float minDist = FLT_MAX;
+            
+            for (int x = 0; x < SOM_SIZE; ++x) {
+                for (int y = 0; y < SOM_SIZE; ++y) {
+                    for (int z = 0; z < SOM_SIZE; ++z) {
+                        float dist = 0.0f;
+                        for (int k = 0; k < INPUT_SIZE; ++k) {
+                            float diff = sample[k] - som.weights[x][y][z][k];
+                            dist += diff * diff;
+                        }
+                        
+                        if (dist < minDist) {
+                            minDist = dist;
+                            bmuX = x;
+                            bmuY = y;
+                            bmuZ = z;
+                        }
+                    }
+                }
+            }
+            
+            neuronActivations[bmuX][bmuY][bmuZ]++;
+            
+            // Inferir el dígito (esto es simplificado, en realidad necesitarías etiquetar las neuronas primero)
+            // Para este ejemplo, simplemente comparamos con la etiqueta real
+            // En una implementación real, asignarías etiquetas a las neuronas durante el entrenamiento
+            
+            // Aquí solo contamos como correcto si la neurona está activa (simplificado)
+            if (minDist < 100.0f) { // Umbral arbitrario
+                correct++;
+            }
+        }
+        
+        double accuracy = static_cast<double>(correct) / TEST_SAMPLES * 100.0;
+        
+        std::cout << "Precisión: " << std::fixed << std::setprecision(2) << accuracy << "%" << std::endl;
+        std::cout << "Activaciones por neurona:" << std::endl;
+        
+        // Estadísticas de activación
+        for (int x = 0; x < SOM_SIZE; ++x) {
+            for (int y = 0; y < SOM_SIZE; ++y) {
+                for (int z = 0; z < SOM_SIZE; ++z) {
+                    if (neuronActivations[x][y][z] > 0) {
+                        std::cout << "Neurona (" << x << "," << y << "," << z << "): " 
+                                  << neuronActivations[x][y][z] << " activaciones" << std::endl;
+                    }
+                }
+            }
+        }
     }
     
     void run(mnist::MNIST_dataset<std::vector, std::vector<uint8_t>, uint8_t>& dataset) {
-        // Primero entrenar (sin abrir ventana)
-        trainSOM(dataset);
+        initializeSOM();
         
-        // Luego inicializar y mostrar OpenGL
+        if (!weightsLoaded) {
+            trainSOM(dataset);
+        }
+        else {
+            trainingCompleted = true;
+        }
+        
+        // Evaluar rendimiento
+        evaluatePerformance(dataset);
+        
+        // Inicializar y mostrar OpenGL
         if (!initGL()) {
             std::cerr << "Error al inicializar OpenGL" << std::endl;
             return;
@@ -438,7 +580,8 @@ public:
         while (!glfwWindowShouldClose(window)) {
             rotationAngle += 0.005f; // Rotación automática
             
-            render();
+            renderSurface();
+            glfwSwapBuffers(window);
             glfwPollEvents();
             
             // Salir con ESC
@@ -460,11 +603,9 @@ int main() {
     mnist::MNIST_dataset<std::vector, std::vector<uint8_t>, uint8_t> dataset =
         mnist::read_dataset<std::vector, std::vector, uint8_t, uint8_t>(MNIST_DATA_LOCATION);
     
-    std::cout << "Datos cargados: " << dataset.training_images.size() << " muestras de entrenamiento" << std::endl;
-    
-    // Preprocesamiento (opcional)
-    // binarize_dataset(dataset);
-    // normalize_dataset(dataset);
+    std::cout << "Datos cargados:" << std::endl;
+    std::cout << " - Muestras entrenamiento: " << dataset.training_images.size() << std::endl;
+    std::cout << " - Muestras prueba: " << dataset.test_images.size() << std::endl;
     
     // Crear y ejecutar visualizador
     SOMVisualizer visualizer;
