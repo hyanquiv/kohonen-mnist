@@ -3,6 +3,10 @@
 Aplicación en C++ que carga el dataset MNIST, entrena (o carga) una red Kohonen 3D (Self-Organizing Map)
 y visualiza la superficie externa del cubo SOM en una ventana OpenGL usando GLFW, GLEW y GLM.
 
+## DEMO
+
+https://github.com/user-attachments/assets/ed7a95f2-d9cd-4cc4-b53d-4d81fe2004ba
+
 ## Qué hace el programa
 
 - Carga el dataset MNIST mediante `mnist::read_dataset`.
