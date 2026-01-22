@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.0)
 
 PROJECT(mnist_example)
-# Usa C++17 o el estándar que necesites
+# Usa C++17 o el estï¿½ndar que necesites
 set(CMAKE_CXX_STANDARD 17)
 
 # .. -> hint, that the mnist package is one directory level above.
@@ -23,7 +23,16 @@ find_package(GLEW REQUIRED)
 
 add_executable(mnist_example main.cpp)
 
-# Linkear librerías encontradas
+# Add modular sources
+target_sources(mnist_example PRIVATE
+    som.cpp
+    visualizer.cpp
+)
+
+# Ensure example directory is on the include path so headers are found
+target_include_directories(mnist_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Linkear librerï¿½as encontradas
 target_link_libraries(mnist_example
     PRIVATE
     glfw
@@ -32,6 +41,7 @@ target_link_libraries(mnist_example
     GLEW::GLEW
 )
 
+# Keep compile features
 target_compile_features(mnist_example PRIVATE cxx_range_for)
 # Pass MNIST data directory to main.cpp
 target_compile_definitions(mnist_example PRIVATE MNIST_DATA_LOCATION="${MNIST_DATA_DIR}")
