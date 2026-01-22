@@ -16,10 +16,13 @@ https://github.com/user-attachments/assets/ed7a95f2-d9cd-4cc4-b53d-4d81fe2004ba
 - Inicia una ventana OpenGL y renderiza solo la superficie del cubo SOM: cada neurona de la superficie se muestra como un plano texturizado con su patrón 28×28 (los pesos de la neurona).
 - La visualización orbita automáticamente; presione ESC para cerrar la ventana.
 
-## Archivos importantes
+## Estructura y archivos importantes
 
-- Código de ejemplo y entrada principal: `example/main.cpp`
-- Cargador MNIST: `include/mnist/`
+- Principal de ejemplo: `example/main.cpp` (ahora reducido: crea `Kohonen3D` y llama a la visualización).
+- Módulos añadidos en la refactorización:
+	- `example/som.hpp`, `example/som.cpp` — implementación y API de la red Kohonen 3D (inicialización, carga/guardado, entrenamiento, evaluación).
+	- `example/visualizer.hpp`, `example/visualizer.cpp` — clase `SOMVisualizer` para la visualización OpenGL de la superficie del SOM.
+- Cargador MNIST: `include/mnist/`.
 - Archivos del dataset (opcionales en el repositorio): `train-images-idx3-ubyte`, `train-labels-idx1-ubyte`, `t10k-images-idx3-ubyte`, `t10k-labels-idx1-ubyte`.
 
 ## Dependencias y compilación
@@ -49,6 +52,9 @@ cmake --build . --config Release
 
 - Asegúrese de que los ficheros del dataset MNIST estén accesibles para el programa. El proyecto puede usar la macro `MNIST_DATA_LOCATION` para localizar los archivos; por simplicidad coloque los ficheros `*-idx*` en la raíz del repositorio donde están incluidos en este proyecto.
 - Ejecute el binario generado (por ejemplo `example.exe` o el ejecutable que cree CMake). Al arrancar mostrará información de carga, entrenará si no hay pesos guardados, evaluará y abrirá la ventana de visualización.
+- Asegúrese de que los ficheros del dataset MNIST estén accesibles para el programa. El ejemplo usa la macro `MNIST_DATA_LOCATION` (definida por `example/CMakeLists.txt`) para localizar los archivos.
+- Tras la refactorización, `example/CMakeLists.txt` incluye ahora los nuevos fuentes (`som.cpp`, `visualizer.cpp`) y expone `example/` como include directory para encontrar los headers locales.
+- Ejecute el binario generado (por ejemplo `mnist_example`); al arrancar cargará los datos, entrenará (si no hay pesos), evaluará y abrirá la ventana de visualización.
 
 ## Notas
 
